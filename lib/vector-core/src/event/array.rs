@@ -8,8 +8,11 @@ use futures::{stream, Stream};
 #[cfg(test)]
 use quickcheck::{Arbitrary, Gen};
 use vector_buffers::EventCount;
+use vector_common::finalization::{AddBatchNotifier, BatchNotifier, EventFinalizers, Finalizable};
 
-use super::{Event, EventDataEq, EventMutRef, EventRef, LogEvent, Metric, TraceEvent};
+use super::{
+    Event, EventDataEq, EventFinalizer, EventMutRef, EventRef, LogEvent, Metric, TraceEvent,
+};
 use crate::ByteSizeOf;
 
 /// The type alias for an array of `LogEvent` elements.
@@ -214,6 +217,22 @@ impl From<MetricArray> for EventArray {
     }
 }
 
+impl AddBatchNotifier for EventArray {
+    fn add_batch_notifier(&mut self, batch: BatchNotifier) {
+        match self {
+            Self::Logs(array) => array
+                .iter_mut()
+                .for_each(|item| item.add_finalizer(EventFinalizer::new(batch.clone()))),
+            Self::Metrics(array) => array
+                .iter_mut()
+                .for_each(|item| item.add_finalizer(EventFinalizer::new(batch.clone()))),
+            Self::Traces(array) => array
+                .iter_mut()
+                .for_each(|item| item.add_finalizer(EventFinalizer::new(batch.clone()))),
+        }
+    }
+}
+
 impl ByteSizeOf for EventArray {
     fn allocated_bytes(&self) -> usize {
         match self {
@@ -261,6 +280,16 @@ impl EventDataEq for EventArray {
             (Self::Metrics(a), Self::Metrics(b)) => a.event_data_eq(b),
             (Self::Traces(a), Self::Traces(b)) => a.event_data_eq(b),
             _ => false,
+        }
+    }
+}
+
+impl Finalizable for EventArray {
+    fn take_finalizers(&mut self) -> EventFinalizers {
+        match self {
+            Self::Logs(a) => a.iter_mut().map(Finalizable::take_finalizers).collect(),
+            Self::Metrics(a) => a.iter_mut().map(Finalizable::take_finalizers).collect(),
+            Self::Traces(a) => a.iter_mut().map(Finalizable::take_finalizers).collect(),
         }
     }
 }
