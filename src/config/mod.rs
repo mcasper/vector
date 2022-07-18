@@ -639,6 +639,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn conflicting_fd_resources() {
+        let result = load(
+            r#"
+            [sources.stdin]
+            type = "stdin"
+
+            [sources.pipe]
+            type = "pipe"
+            fd = 0
+
+            [sinks.out]
+            type = "basic_sink"
+            inputs = ["stdin", "pipe"]
+            "#,
+            Format::Toml,
+        )
+        .await;
+
+
+        let expected = Err(vec!["Resource `fd: 0` is claimed by multiple components: {ComponentKey { id: \"stdin\" }, ComponentKey { id: \"pipe\" }}".to_string()]);
+        assert_eq!(result, expected);
+    }
+
+    #[tokio::test]
     async fn warnings() {
         let warnings = load(
             r#"

@@ -86,7 +86,9 @@ impl SourceConfig for PipeConfig {
     }
 
     fn resources(&self) -> Vec<Resource> {
-        vec![Resource::Fd(0)]
+        // When the stdin source is in use it claims Resource::Fd(0), to prevent
+        // two sources from trying to claim the same fd.
+        vec![Resource::Fd(self.fd)]
     }
 
     fn can_acknowledge(&self) -> bool {
@@ -118,7 +120,7 @@ pub fn pipe_source(
     // until another newline is entered. See
     // https://github.com/tokio-rs/tokio/blob/a73428252b08bf1436f12e76287acbc4600ca0e5/tokio/src/io/stdin.rs#L33-L42
     thread::spawn(move || {
-        info!("Capturing fd.");
+        info!("Capturing fd {}.", config.fd);
 
         loop {
             let (buffer, len) = match pipe.fill_buf() {
