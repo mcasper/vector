@@ -15,6 +15,7 @@ use futures::{channel::mpsc, executor, SinkExt, StreamExt};
 use indoc::indoc;
 use tokio_util::{codec::FramedRead, io::StreamReader};
 use vector_config::configurable_component;
+use vector_core::config::LogNamespace;
 use vector_core::ByteSizeOf;
 
 use crate::{
@@ -77,7 +78,7 @@ impl SourceConfig for PipeConfig {
         pipe_source(self.clone(), cx.shutdown, cx.out)
     }
 
-    fn outputs(&self) -> Vec<Output> {
+    fn outputs(&self, _global_log_namespace: LogNamespace) -> Vec<Output> {
         vec![Output::default(self.decoding.output_type())]
     }
 
@@ -101,6 +102,7 @@ pub fn pipe_source(
     shutdown: ShutdownSignal,
     mut out: SourceSender,
 ) -> crate::Result<super::Source> {
+    println!("Creating read pipe from fd {:?}", config.fd);;
     let mut pipe = io::BufReader::new(unsafe { File::from_raw_fd(config.fd) });
     let host_key = config
         .host_key
@@ -110,7 +112,7 @@ pub fn pipe_source(
     let framing = config
         .framing
         .unwrap_or_else(|| config.decoding.default_stream_framing());
-    let decoder = DecodingConfig::new(framing, config.decoding).build();
+    let decoder = DecodingConfig::new(framing, config.decoding, LogNamespace::Legacy).build();
 
     let (mut sender, receiver) = mpsc::channel(1024);
 
@@ -217,6 +219,48 @@ mod tests {
                 framing: None,
                 decoding: default_decoding(),
                 fd: read_fd,
+            };
+
+            let mut stream = rx;
+
+            write(write_fd, b"hello world\nhello world again\n").unwrap();
+            close(write_fd).unwrap();
+
+            pipe_source(config, ShutdownSignal::noop(), tx)
+                .unwrap()
+                .await
+                .unwrap();
+
+            let event = stream.next().await;
+            assert_eq!(
+                Some("hello world".into()),
+                event.map(|event| event.as_log()[log_schema().message_key()].to_string_lossy())
+            );
+
+            let event = stream.next().await;
+            assert_eq!(
+                Some("hello world again".into()),
+                event.map(|event| event.as_log()[log_schema().message_key()].to_string_lossy())
+            );
+
+            let event = stream.next().await;
+            assert!(event.is_none());
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn pipe_handles_invalid_fd() {
+        assert_source_compliance(&["protocol"], async {
+            let (tx, rx) = SourceSender::new_test();
+            let (read_fd, write_fd) = pipe().unwrap();
+            println!("Read fd {:?}, write fd {:?}", read_fd, write_fd);
+            let config = PipeConfig {
+                max_length: crate::serde::default_max_length(),
+                host_key: Default::default(),
+                framing: None,
+                decoding: default_decoding(),
+                fd: write_fd, // intentional
             };
 
             let mut stream = rx;
